@@ -1,27 +1,37 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
-import dotenv from "dotenv";
+import { WorkspaceClient } from "@databricks/sdk";
 
+// Para desenvolvimento local, carrega variáveis do .env
+// Em Databricks Apps, as variáveis são injetadas automaticamente
+import dotenv from "dotenv";
 dotenv.config();
 
 let activeRun: { runId: number; user: string; startTime: string } | null = null;
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  // Databricks Apps usa porta 8080 por padrão
+  const PORT = parseInt(process.env.PORT || "8080");
 
   app.use(express.json());
 
-  // --- Databricks API Proxy ---
-  app.get("/api/databricks/active-run", (req, res) => {
-    // Verificar timeout de 30 minutos
+  // Databricks SDK - autenticação automática em Databricks Apps (via service principal)
+  // Para dev local, defina DATABRICKS_HOST e DATABRICKS_TOKEN no .env
+  const w = new WorkspaceClient();
+
+  const notebookPath = process.env.DATABRICKS_NOTEBOOK_PATH;
+  const clusterId = process.env.DATABRICKS_CLUSTER_ID;
+
+  if (!notebookPath || !clusterId) {
+    console.warn("AVISO: DATABRICKS_NOTEBOOK_PATH ou DATABRICKS_CLUSTER_ID não configurados.");
+  }
+
+  // --- Gerenciamento de Run Ativa ---
+  app.get("/api/databricks/active-run", (_req, res) => {
     if (activeRun) {
-      const startTime = new Date(activeRun.startTime).getTime();
-      const now = new Date().getTime();
-      const diffMinutes = (now - startTime) / (1000 * 60);
-      
-      if (diffMinutes > 30) {
+      const elapsed = (Date.now() - new Date(activeRun.startTime).getTime()) / 60000;
+      if (elapsed > 30) {
         console.log(`[Timeout] Liberando execução ${activeRun.runId} após 30 minutos.`);
         activeRun = null;
       }
@@ -29,7 +39,6 @@ async function startServer() {
     res.json(activeRun);
   });
 
-  // Endpoint para liberar o bloqueio manualmente ou via polling
   app.post("/api/databricks/clear-run", (req, res) => {
     const { runId } = req.body;
     if (activeRun && activeRun.runId === runId) {
@@ -40,21 +49,11 @@ async function startServer() {
     }
   });
 
-  // Proxy Databricks API to avoid CORS issues and hide token
-  app.get("/api/databricks/test", async (req, res) => {
-    const workspaceUrl = process.env.VITE_DATABRICKS_WORKSPACE_URL?.replace(/\/$/, "");
-    const token = process.env.VITE_DATABRICKS_TOKEN;
-    const clusterId = process.env.VITE_DATABRICKS_CLUSTER_ID?.split('?')[0];
-    const notebookPath = process.env.VITE_DATABRICKS_NOTEBOOK_PATH;
-
-    if (!workspaceUrl || !token || !clusterId || !notebookPath) {
-      return res.status(400).json({ error: "Configuração incompleta no servidor." });
+  // --- Teste de Conexão com Databricks ---
+  app.get("/api/databricks/test", async (_req, res) => {
+    if (!clusterId || !notebookPath) {
+      return res.status(400).json({ error: "DATABRICKS_NOTEBOOK_PATH ou DATABRICKS_CLUSTER_ID não configurados." });
     }
-
-    const headers = {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    };
 
     const result: {
       api: boolean;
@@ -63,149 +62,109 @@ async function startServer() {
     } = {
       api: false,
       cluster: { ok: false },
-      notebook: { ok: false }
+      notebook: { ok: false },
     };
 
     try {
-      // 1. Test API Access
-      const apiRes = await fetch(`${workspaceUrl}/api/2.0/clusters/list`, { method: "GET", headers });
-      if (!apiRes.ok) {
-        const errorBody = await apiRes.json().catch(() => ({ message: apiRes.statusText }));
-        console.error("[Databricks API Test Error]", { status: apiRes.status, body: errorBody });
-        throw new Error(`API Test failed: HTTP ${apiRes.status} - ${JSON.stringify(errorBody)}`);
-      }
-      result.api = true;
-
-      // 2. Test Specific Cluster
-      const clusterRes = await fetch(`${workspaceUrl}/api/2.0/clusters/get?cluster_id=${clusterId}`, { method: "GET", headers });
-      if (clusterRes.ok) {
-        const data = await clusterRes.json();
-        result.cluster = { ok: true, state: data.state };
-      } else {
-        const err = await clusterRes.json().catch(() => ({ message: clusterRes.statusText }));
-        console.error("[Databricks Cluster Test Error]", { status: clusterRes.status, body: err });
-        result.cluster = { ok: false, message: err.message || JSON.stringify(err) };
+      // 1. Testar acesso ao cluster (valida API + cluster de uma vez)
+      try {
+        const clusterInfo = await w.clusters.get({ cluster_id: clusterId });
+        result.api = true;
+        result.cluster = { ok: true, state: clusterInfo.state as string };
+      } catch (err: any) {
+        // Se recebeu resposta HTTP, a API está acessível mas o cluster pode não existir
+        if (err.statusCode || err.status) {
+          result.api = true;
+        }
+        result.cluster = { ok: false, message: err.message };
       }
 
-      // 3. Test Specific Notebook
-      const notebookRes = await fetch(`${workspaceUrl}/api/2.0/workspace/get-status?path=${encodeURIComponent(notebookPath)}`, { method: "GET", headers });
-      if (notebookRes.ok) {
+      // 2. Testar acesso ao notebook
+      try {
+        await w.workspace.getStatus({ path: notebookPath });
+        if (!result.api) result.api = true;
         result.notebook = { ok: true };
-      } else {
-        const err = await notebookRes.json().catch(() => ({ message: notebookRes.statusText }));
-        console.error("[Databricks Notebook Test Error]", { status: notebookRes.status, body: err });
-        result.notebook = { ok: false, message: err.message || JSON.stringify(err) };
+      } catch (err: any) {
+        if (err.statusCode || err.status) {
+          if (!result.api) result.api = true;
+        }
+        result.notebook = { ok: false, message: err.message };
       }
 
       res.json(result);
     } catch (error: any) {
       console.error("[Databricks Test Critical Error]", error);
-      res.status(500).json({ error: error.message, details: error.stack });
+      res.status(500).json({ error: error.message });
     }
   });
 
+  // --- Disparar Notebook ---
   app.post("/api/databricks/run", async (req, res) => {
-    const workspaceUrl = process.env.VITE_DATABRICKS_WORKSPACE_URL?.replace(/\/$/, "");
-    const notebookPath = process.env.VITE_DATABRICKS_NOTEBOOK_PATH;
-    const clusterId = process.env.VITE_DATABRICKS_CLUSTER_ID?.split('?')[0];
-    const token = process.env.VITE_DATABRICKS_TOKEN;
-
-    if (!workspaceUrl || !notebookPath || !clusterId || !token) {
+    if (!clusterId || !notebookPath) {
       return res.status(400).json({ error: "Configuração incompleta no servidor." });
     }
 
-    // Verificar se já existe uma execução ativa
     if (activeRun) {
-      return res.status(409).json({ 
-        error: "Já existe um processo em execução.", 
-        activeRun 
+      return res.status(409).json({
+        error: "Já existe um processo em execução.",
+        activeRun,
       });
     }
 
-    const url = `${workspaceUrl}/api/2.1/jobs/runs/submit`;
-    const body = {
-      run_name: `Databricks_Hub_Trigger_${new Date().toISOString()}`,
-      existing_cluster_id: clusterId,
-      notebook_task: {
-        notebook_path: notebookPath,
-        base_parameters: {
-          config_data: JSON.stringify(req.body)
-        }
-      }
-    };
-
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
+      const response = await w.jobs.submit({
+        run_name: `Precificacao_Trigger_${new Date().toISOString()}`,
+        tasks: [
+          {
+            task_key: "precificacao_notebook",
+            existing_cluster_id: clusterId,
+            notebook_task: {
+              notebook_path: notebookPath,
+              base_parameters: {
+                config_data: JSON.stringify(req.body),
+              },
+            },
+          },
+        ],
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        console.error("[Databricks Run Error]", { status: response.status, body: data });
-        return res.status(response.status).json({ 
-          error: "Erro ao disparar notebook no Databricks", 
-          details: data,
-          status: response.status 
-        });
-      }
+      const runId = response.run_id!;
 
-      // Registrar a execução ativa
       activeRun = {
-        runId: data.run_id,
+        runId,
         user: req.body.user || "Usuário Desconhecido",
-        startTime: new Date().toISOString()
+        startTime: new Date().toISOString(),
       };
 
-      res.json(data);
+      res.json({ run_id: runId });
     } catch (error: any) {
-      console.error("[Databricks Run Critical Error]", error);
-      res.status(500).json({ error: error.message, details: error.stack });
+      console.error("[Databricks Run Error]", error);
+      res.status(500).json({ error: error.message });
     }
   });
 
+  // --- Status de Execução ---
   app.get("/api/databricks/status/:runId", async (req, res) => {
-    const workspaceUrl = process.env.VITE_DATABRICKS_WORKSPACE_URL?.replace(/\/$/, "");
-    const token = process.env.VITE_DATABRICKS_TOKEN;
-    const { runId } = req.params;
-
-    if (!workspaceUrl || !token) {
-      return res.status(400).json({ error: "Configuração incompleta no servidor." });
-    }
-
-    const url = `${workspaceUrl}/api/2.1/jobs/runs/get?run_id=${runId}`;
-
     try {
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        console.error("[Databricks Status Error]", { status: response.status, body: data });
-        return res.status(response.status).json({ 
-          error: "Erro ao consultar status no Databricks", 
-          details: data,
-          status: response.status 
-        });
-      }
+      const data = await w.jobs.getRun({ run_id: parseInt(req.params.runId) });
       res.json(data);
     } catch (error: any) {
-      console.error("[Databricks Status Critical Error]", error);
-      res.status(500).json({ error: error.message, details: error.stack });
+      console.error("[Databricks Status Error]", error);
+      res.status(500).json({ error: error.message });
     }
   });
 
-  // Vite middleware for development
+  // --- Endpoint de info (para debug no frontend) ---
+  app.get("/api/databricks/config-info", (_req, res) => {
+    res.json({
+      clusterId: clusterId || "(não configurado)",
+      notebookPath: notebookPath || "(não configurado)",
+    });
+  });
+
+  // --- Arquivos Estáticos & SPA ---
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -214,13 +173,13 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
 

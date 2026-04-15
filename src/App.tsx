@@ -47,6 +47,7 @@ const MainApp = () => {
     type: null,
     message: "",
   });
+  const [configInfo, setConfigInfo] = useState<{ clusterId: string; notebookPath: string } | null>(null);
 
   const currentUserEmail = "victor.bertini@aramisinc.com.br";
 
@@ -69,6 +70,11 @@ const MainApp = () => {
     
     addLog("Aplicativo iniciado.", "info");
     checkActiveRun();
+    // Buscar info de config do backend
+    fetch("/api/databricks/config-info")
+      .then(r => r.json())
+      .then(data => setConfigInfo(data))
+      .catch(() => {});
   }, []);
 
   const checkActiveRun = async () => {
@@ -132,13 +138,13 @@ const MainApp = () => {
       addLog("1. Acesso à API: OK", "success");
       
       if (result.cluster.ok) {
-        addLog(`2. Cluster (${import.meta.env.VITE_DATABRICKS_CLUSTER_ID}): OK (Status: ${result.cluster.state})`, "success");
+        addLog(`2. Cluster (${configInfo?.clusterId ?? "?"}): OK (Status: ${result.cluster.state})`, "success");
       } else {
         addLog(`2. Cluster: ERRO - ${result.cluster.message}`, "error");
       }
 
       if (result.notebook.ok) {
-        addLog(`3. Notebook (${import.meta.env.VITE_DATABRICKS_NOTEBOOK_PATH}): OK`, "success");
+        addLog(`3. Notebook (${configInfo?.notebookPath ?? "?"}): OK`, "success");
       } else {
         addLog(`3. Notebook: ERRO - ${result.notebook.message}`, "error");
       }
