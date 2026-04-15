@@ -16,8 +16,9 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Databricks SDK - autenticação automática em Databricks Apps (via service principal)
-  // Para dev local, defina DATABRICKS_HOST e DATABRICKS_TOKEN no .env
+  // Databricks SDK - autenticação automática:
+  // - Databricks Apps: via service principal gerenciado
+  // - Dev local: via OAuth (rode `databricks auth login` antes)
   const w = new WorkspaceClient();
 
   const notebookPath = process.env.DATABRICKS_NOTEBOOK_PATH;
