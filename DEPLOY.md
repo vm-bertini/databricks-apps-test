@@ -28,6 +28,11 @@ databricks --version
 ### Configurar autenticação
 
 ```bash
+# Opção 1: OAuth (recomendado — não precisa de PAT)
+databricks auth login --host https://seu-workspace.cloud.databricks.com
+# Abre o navegador para autenticar via SSO
+
+# Opção 2: PAT (alternativa)
 databricks configure
 # Informe:
 # - Databricks Host: https://seu-workspace.cloud.databricks.com
@@ -50,10 +55,15 @@ cp .env.example .env
 
 Edite o `.env`:
 ```env
-DATABRICKS_HOST=https://seu-workspace.cloud.databricks.com
-DATABRICKS_TOKEN=dapi_seu_token_aqui
 DATABRICKS_NOTEBOOK_PATH=/Repos/user/project/notebook
 DATABRICKS_CLUSTER_ID=1234-567890-abcdefgh
+
+# Para autenticação local, escolha UMA das opções:
+# Opção 1: OAuth (não precisa de token) — rode antes:
+#   databricks auth login --host https://seu-workspace.cloud.databricks.com
+# Opção 2: PAT manual
+DATABRICKS_HOST=https://seu-workspace.cloud.databricks.com
+DATABRICKS_TOKEN=dapi_seu_token_aqui
 ```
 
 ```bash
