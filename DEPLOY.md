@@ -6,7 +6,7 @@ Guia completo para levar este app (Aramis Front Precificação Outlet) para roda
 
 ## Pré-requisitos
 
-- **Databricks CLI** instalado e configurado (`databricks configure`)
+- **Databricks CLI** instalado e autenticado via OAuth
 - **Workspace Databricks** com Databricks Apps habilitado (disponível em workspaces Premium/Enterprise)
 - **Cluster existente** no workspace (o ID será necessário)
 - **Notebook** já criado no workspace com a lógica de precificação
@@ -25,18 +25,20 @@ pip install databricks-cli
 databricks --version
 ```
 
-### Configurar autenticação
+### Configurar autenticação (OAuth)
+
+A autenticação usa OAuth U2M (User-to-Machine) — abre o navegador para login via SSO do seu workspace. Nenhum token manual é necessário.
 
 ```bash
-# Opção 1: OAuth (recomendado — não precisa de PAT)
 databricks auth login --host https://seu-workspace.cloud.databricks.com
 # Abre o navegador para autenticar via SSO
+# O token OAuth é gerenciado automaticamente pelo CLI e pelo SDK
+```
 
-# Opção 2: PAT (alternativa)
-databricks configure
-# Informe:
-# - Databricks Host: https://seu-workspace.cloud.databricks.com
-# - Personal Access Token: dapi_xxxxx
+Verifique que funcionou:
+
+```bash
+databricks clusters list
 ```
 
 ---
@@ -57,14 +59,9 @@ Edite o `.env`:
 ```env
 DATABRICKS_NOTEBOOK_PATH=/Repos/user/project/notebook
 DATABRICKS_CLUSTER_ID=1234-567890-abcdefgh
-
-# Para autenticação local, escolha UMA das opções:
-# Opção 1: OAuth (não precisa de token) — rode antes:
-#   databricks auth login --host https://seu-workspace.cloud.databricks.com
-# Opção 2: PAT manual
-DATABRICKS_HOST=https://seu-workspace.cloud.databricks.com
-DATABRICKS_TOKEN=dapi_seu_token_aqui
 ```
+
+> **Autenticação local:** O SDK usa automaticamente o token OAuth que você configurou com `databricks auth login`. Não precisa de nenhuma variável de token no `.env`.
 
 ```bash
 # 3. Rodar em modo dev
@@ -108,7 +105,7 @@ O app precisa de duas variáveis:
 | `DATABRICKS_NOTEBOOK_PATH` | Caminho do notebook no workspace | `/Repos/data-team/precificacao/notebook_outlet` |
 | `DATABRICKS_CLUSTER_ID` | ID do cluster existente | `1234-567890-abcdefgh` |
 
-> **Nota:** Você **NÃO** precisa configurar `DATABRICKS_HOST` nem `DATABRICKS_TOKEN`. O Databricks Apps injeta automaticamente a URL do workspace e usa um **service principal** para autenticação. O SDK (`@databricks/sdk`) detecta essas credenciais sem configuração adicional.
+> **Nota:** Você **NÃO** precisa configurar tokens ou credenciais manuais. O Databricks Apps injeta automaticamente a URL do workspace e usa um **service principal** para autenticação. O SDK (`@databricks/sdk`) detecta essas credenciais sem configuração adicional.
 
 ---
 
@@ -304,9 +301,9 @@ Causas comuns:
 
 | Aspecto | Dev Local | Databricks Apps |
 |---|---|---|
-| **Autenticação** | Token manual no `.env` | Service principal automático |
+| **Autenticação** | OAuth via `databricks auth login` | Service principal automático |
 | **Porta** | 8080 (ou custom via PORT) | 8080 (padrão do runtime) |
-| **DATABRICKS_HOST** | Manual no `.env` | Injetado automaticamente |
+| **DATABRICKS_HOST** | Detectado do perfil OAuth | Injetado automaticamente |
 | **Frontend** | Vite dev server (HMR) | Build estático servido pelo Express |
 | **NODE_ENV** | development | production |
 | **HTTPS** | Não | Sim (gerenciado pelo Databricks) |
